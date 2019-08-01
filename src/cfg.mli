@@ -17,23 +17,25 @@
 (*   special exception on linking described in the file LICENSE.          *)
 (*                                                                        *)
 (**************************************************************************)
-type label = Linearize.label
 
-module LabelSet : Set.S with type elt = label
+(** Control flow graph representation of a function's code. *)
 
-(* CR gyorsh: store label after separately and update after reordering. *)
+module Label : Identifiable.S with type t := Linearize.label
+
+(* CR gyorsh: store [label_after] separately and update after reordering. *)
 type func_call_operation =
-  | Indirect of { label_after : label }
+  | Indirect of { label_after : Label.t; }
+  (* CR mshinwell: Rename [Immediate] -> [Direct]? *)
   | Immediate of {
       func : string;
-      label_after : label;
+      label_after : Label.t;
     }
 
 type prim_call_operation =
   | External of {
       func : string;
       alloc : bool;
-      label_after : label;
+      label_after : Label.t;
     }
   | Alloc of {
       bytes : int;
@@ -82,67 +84,80 @@ type condition =
   | Always
   | Test of Mach.test
 
-type successor = condition * label
+type successor = condition * Label.t
 
-(* basic block *)
-type block = {
-  start : label;
-  mutable body : basic instruction list;
-  mutable terminator : terminator instruction;
-  mutable predecessors : LabelSet.t;
-}
-
-and 'a instruction = {
+type 'a instruction = {
   desc : 'a;
   arg : Reg.t array;
   res : Reg.t array;
   dbg : Debuginfo.t;
   live : Reg.Set.t;
   trap_depth : int;
-  (* CR: make id into an abstract type to distinguish special cases of new
-     ids explicitly. *)
+  (* CR gyorsh: make [id] into an abstract type to distinguish special cases of
+     new ids explicitly. *)
   id : int;
 }
 
-and basic =
+type basic =
   | Op of operation
   | Call of call_operation
   | Reloadretaddr
   | Entertrap
-  | Pushtrap of { lbl_handler : label }
+  | Pushtrap of { lbl_handler : Label.t; }
   | Poptrap
   | Prologue
 
-and terminator =
-  | Branch of successor list
-  | Switch of label array
-  | Return
-  | Raise of Cmm.raise_kind
-  | Tailcall of func_call_operation
+(* CR gyorsh: [Switch] has successors but currently no way to attach User_data
+   to them. Can be fixed by translating Switch to Branch.
+   mshinwell: Is this CR still relevant?
+*)
+module Terminator : sig
+  type t =
+    | Branch of successor list
+    | Switch of Label.t array
+    | Return
+    | Raise of Cmm.raise_kind
+    | Tailcall of func_call_operation
+end
 
-(* CR gyorsh: Switch can be translated to Branch. *)
-(* Control Flow Graph of a function. *)
+module Basic_block : sig
+  (** Sequences of code without any control flow constructs (save for
+      asynchronous exceptions e.g. from allocation points). *)
+  type t = {
+    start : Label.t;
+    mutable body : basic instruction list;
+    mutable terminator : terminator instruction;
+    mutable predecessors : Label.Set.t;
+  }
+
+  val successors : t -> successor list
+
+  val successor_labels : t -> Label.t list
+end
+
+(** Control flow graph of a function. *)
 type t = {
-  blocks : (label, block) Hashtbl.t;
-  (* Map labels to blocks *)
+ blocks : Basic_block.t Label.Tbl.t;
+  (** Map from labels to basic blocks. *)
   fun_name : string;
-  (* Function name, used for printing messages *)
-  entry_label : label; (* Must be first in all layouts of this cfg. *)
+  (** Function name, used for printing messages. *)
+  entry_label : Label.t;
+  (** The label of the block that must always be first in any layout of
+      this CFG. *)
 }
 
-val successors : block -> successor list
-
-val successor_labels : block -> label list
-
-(* Debug printing *)
-val print :
-  out_channel ->
-  t ->
-  label list ->
-  basic_to_linear:(basic instruction ->
-                  Linearize.instruction ->
-                  Linearize.instruction) ->
-  linearize_terminator:(terminator instruction -> Linearize.instruction) ->
-  unit
+(** Debug printing. *)
+val print
+   : out_channel
+  -> t
+  -> Label.t list
+  -> basic_to_linear:(
+       basic instruction
+    -> Linearize.instruction
+    -> Linearize.instruction)
+  -> linearize_terminator:(
+       terminator instruction
+    -> Linearize.instruction)
+  -> unit
 
 val print_terminator : Format.formatter -> terminator instruction -> unit

@@ -17,15 +17,12 @@
 (*   special exception on linking described in the file LICENSE.          *)
 (*                                                                        *)
 (**************************************************************************)
-type label = Linearize.label
 
-module LabelSet = Set.Make (struct
-  type t = label
+module Label = struct
+  type t = Linearize.label
+  include Identifiable.Make (Numbers.Int)
+end
 
-  let compare (x : t) y = compare x y
-end)
-
-(* CR gyorsh: store label after separately and update after reordering. *)
 type func_call_operation =
   | Indirect of { label_after : label }
   | Immediate of {
@@ -86,20 +83,9 @@ type condition =
   | Always
   | Test of Mach.test
 
-type successor = condition * label
+type successor = condition * Label.t
 
-(* CR gyorsh: Switch has successors but currently no way to attach User_data
-   to them. Can be fixed by translating Switch to Branch. *)
-
-(* basic block *)
-type block = {
-  start : label;
-  mutable body : basic instruction list;
-  mutable terminator : terminator instruction;
-  mutable predecessors : LabelSet.t;
-}
-
-and 'a instruction = {
+type 'a instruction = {
   desc : 'a;
   arg : Reg.t array;
   res : Reg.t array;
@@ -109,46 +95,52 @@ and 'a instruction = {
   id : int;
 }
 
-and basic =
+type basic =
   | Op of operation
   | Call of call_operation
   | Reloadretaddr
   | Entertrap
-  | Pushtrap of { lbl_handler : label }
+  | Pushtrap of { lbl_handler : Label.t; }
   | Poptrap
   | Prologue
 
-and terminator =
+type terminator =
   | Branch of successor list
   | Switch of label array
   | Return
   | Raise of Cmm.raise_kind
   | Tailcall of func_call_operation
 
-(* Control Flow Graph of a function. *)
+module Basic_block = struct
+  type t = {
+    start : Label.t;
+    mutable body : basic instruction list;
+    mutable terminator : terminator instruction;
+    mutable predecessors : Label.Set.t;
+  }
+
+  let successors t =
+    match t.terminator.desc with
+    | Branch successors -> successors
+    | Return -> []
+    | Raise _ -> []
+    | Tailcall _ -> []
+    | Switch labels ->
+        Array.mapi
+          (fun i label -> (Test (Iinttest_imm (Iunsigned Ceq, i)), label))
+          labels
+        |> Array.to_list
+
+  let successor_labels t =
+    let _, labels = List.split (successors t) in
+    labels
+end
+
 type t = {
-  blocks : (label, block) Hashtbl.t;
-  (* Map labels to blocks *)
+  blocks : Basic_block.t Label.Tbl.t;
   fun_name : string;
-  (* Function name, used for printing messages *)
-  entry_label : label; (* Must be first in all layouts of this cfg. *)
+  entry_label : Label.t;
 }
-
-let successors block =
-  match block.terminator.desc with
-  | Branch successors -> successors
-  | Return -> []
-  | Raise _ -> []
-  | Tailcall _ -> []
-  | Switch labels ->
-      Array.mapi
-        (fun i label -> (Test (Iinttest_imm (Iunsigned Ceq, i)), label))
-        labels
-      |> Array.to_list
-
-let successor_labels block =
-  let _, labels = List.split (successors block) in
-  labels
 
 let print_terminator ppf ti =
   Format.fprintf ppf "\n";
